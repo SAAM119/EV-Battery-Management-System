@@ -45,6 +45,7 @@ void serialtask();
 void buzzertask();
 void relaytask();
 void ledtask(); 
+void Runtimetask();
 
 unsigned long batteryTimer = 0;
 unsigned long lcdTimer = 0;
@@ -58,9 +59,14 @@ unsigned long voltageSpikeTimer = 0;
 unsigned long recoveryTimer = 0 ;
 unsigned long relaydelayTimer = 0;
 unsigned long ScreenTImer = 0;
+//runtime
+unsigned long sensorFreezeTimer1 = 0;
+unsigned long sensorFreezeTimer2 = 0;
+unsigned long sensorFreezeTimer3 = 0;
+unsigned long sensorFreezeTimer4 = 0;
 
 
-const unsigned long batteryInterval = 100;
+const unsigned long batteryInterval = 100;                                
 const unsigned long ScreenInterval=3000; 
 const unsigned long lcdInterval = 500;
 const unsigned long serialInterval = 1000;
@@ -71,6 +77,8 @@ const unsigned long voltageSpikeHoldTime = 2000;
 const unsigned long recoverydelay = 3000;
 const unsigned long relaytrip = 100;
 const unsigned long relayrecover = 1000;
+const float sensorChangeThreshold = 0.01;
+const unsigned long sensorFreezeTime = 5000;
 
 
 // faults
@@ -79,11 +87,24 @@ bool overVoltageFault = false;
 bool sensorFault = false;
 bool voltageSpikeFault = false;
 
+//Runtime faults 
+bool sensordisconnected = false ;
+bool adcfrozen = false ;
+bool relaymismatch = false ;
+bool invalidreading = false ;
+bool watchdog = false ;  
+
 //voltage flucatuation detection
 float oldV1 = 0;
 float oldV2 = 0;
 float oldV3 = 0;
 float oldV4 = 0;
+
+//runtime task 
+float lastStableV1 = 0;
+float lastStableV2 = 0;
+float lastStableV3 = 0;
+float lastStableV4 = 0;
 
 bool buzzerstate = false;
 bool ledstate = false;
@@ -102,13 +123,24 @@ enum batterystate
 
  batterystate  currentState = healthy;
 
+ enum Runtimemode
+ {
+  Normal,
+  Degraded,
+  Failsafe,
+  Shutdown
+ };
+
+ Runtimemode currentRuntimemode = Normal ;
+
  enum Screen
  {
   Cell_Screen,
   Pack_Screen,
   Analytics_Screen,
   Protection_Screen,
-  Diagonistic_Screen
+  Diagonistic_Screen,
+  Fault_Screen
  };
 
  Screen currentScreen = Cell_Screen;
@@ -137,6 +169,7 @@ void loop() {
   buzzertask();
   relaytask();
   ledtask();
+  Runtimetask();
 }
 
   void batterytask()
@@ -324,6 +357,23 @@ else {
 }
 }
  
+  void Runtimetask(){
+    bool sensordisfault = false ;
+
+     if (abs(v1 - lastStableV1) > sensorChangeThreshold)
+     {
+      lastStableV1 = v1 ;
+      sensorFreezeTimer1 = millis();
+     }
+     else 
+     {
+      if (millis() - sensorFreezeTimer1 > sensorFreezeTime){
+        sensordisfault = true;
+      }
+     }
+
+    sensorFault = sensordisfault;
+  }
 // Buzzer Task starts for Task 2 
   void buzzertask() {
   
@@ -534,39 +584,55 @@ switch(currentState)
 }
 }
 
-// LCD Task code from here for Task 2
-
-
+// Screen Task code from here for Task 2
 void Screentask() {
+
+   bool anyFault = weakCellFault || overVoltageFault || sensorFault || voltageSpikeFault;
+
+      if(anyFault) 
+      {
+       if(currentScreen != Fault_Screen)
+         {
+        currentScreen = Fault_Screen;
+        }
+          return;
+      }
+
+      if(currentScreen == Fault_Screen)
+      {
+          currentScreen = Cell_Screen;
+      }
 
   if (millis() - ScreenTImer >= ScreenInterval) {
     ScreenTImer = millis();  
 
-    switch (currentScreen)
-    {
-    case Cell_Screen:
-      currentScreen = Pack_Screen ;
-      break;
 
-      case Pack_Screen :
-      currentScreen = Analytics_Screen;
-      break;
+  switch (currentScreen)
+      {
+      case Cell_Screen:
+        currentScreen = Pack_Screen ;
+        break;
 
-      case Analytics_Screen :
-      currentScreen = Protection_Screen;
-      break;
+        case Pack_Screen :
+        currentScreen = Analytics_Screen;
+        break;
 
-      case Protection_Screen:
-      currentScreen = Diagonistic_Screen;
-      break;
-     
-      case Diagonistic_Screen :
-      currentScreen = Cell_Screen;
-      break;
-    }
+        case Analytics_Screen :
+        currentScreen = Protection_Screen;
+        break;
+
+        case Protection_Screen:
+        currentScreen = Diagonistic_Screen;
+        break;
+      
+        case Diagonistic_Screen :
+        currentScreen = Cell_Screen;
+        break;
+      }
 }
 }
 
+// LCD Task code from here for Task 2
 void lcdtask() {
   
 
@@ -578,9 +644,31 @@ void lcdtask() {
     lcd.clear();
     previousScreen = currentScreen;
    }
-
+  
+   
    switch (currentScreen)
-   {
+    {
+
+   case Fault_Screen:
+
+      lcd.setCursor(0,0);
+      lcd.print("FAULT:");
+
+      lcd.setCursor(0,1);
+      if(sensorFault)
+          lcd.print("Sensor Fault");
+
+      else if(overVoltageFault)
+          lcd.print("Over Voltage");
+
+      else if(weakCellFault)
+          lcd.print("Weak Cell");
+
+      else if(voltageSpikeFault)
+          lcd.print("Voltage Spike");
+
+      break;
+
    case Cell_Screen:
 
     lcd.setCursor(0,0);
