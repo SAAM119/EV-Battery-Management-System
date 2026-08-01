@@ -46,6 +46,13 @@ void buzzertask();
 void relaytask();
 void ledtask(); 
 void Runtimetask();
+void runtimeADCCheck_SensorCheck();
+void runtimeInvalidReadingCheck();
+void runtimeRelayCheck();
+void runtimeWatchdogCheck();
+void runtimeModeManager();
+// void runtimeRecoveryManager();
+// void runtimeLogger();
 
 unsigned long batteryTimer = 0;
 unsigned long lcdTimer = 0;
@@ -64,6 +71,19 @@ unsigned long sensorFreezeTimer1 = 0;
 unsigned long sensorFreezeTimer2 = 0;
 unsigned long sensorFreezeTimer3 = 0;
 unsigned long sensorFreezeTimer4 = 0;
+unsigned long adcfreezeTimer = 0;
+unsigned long runtimeTimer = 0;
+
+//Watchdog 
+unsigned long batteryheartbeat = 0;
+unsigned long runtimeheartbeat = 0;
+unsigned long screenheartbeat = 0;
+unsigned long lcdheartbeat = 0;
+unsigned long serialheartbeat = 0;
+unsigned long buzzerheartbeat = 0;
+unsigned long relayheartbeat = 0;
+unsigned long ledheartbeat = 0;
+
 
 
 const unsigned long batteryInterval = 100;                                
@@ -79,6 +99,10 @@ const unsigned long relaytrip = 100;
 const unsigned long relayrecover = 1000;
 const float sensorChangeThreshold = 0.01;
 const unsigned long sensorFreezeTime = 5000;
+const float adcChangeThreshold = 0.01;
+const unsigned long adcFreezeTime = 5000;
+const unsigned long runtimeInterval = 100;
+const unsigned long watchdogTimeout = 6000; 
 
 
 // faults
@@ -86,13 +110,7 @@ bool weakCellFault = false;
 bool overVoltageFault = false;
 bool sensorFault = false;
 bool voltageSpikeFault = false;
-
-//Runtime faults 
-bool sensordisconnected = false ;
-bool adcfrozen = false ;
-bool relaymismatch = false ;
-bool invalidreading = false ;
-bool watchdog = false ;  
+ 
 
 //voltage flucatuation detection
 float oldV1 = 0;
@@ -106,11 +124,40 @@ float lastStableV2 = 0;
 float lastStableV3 = 0;
 float lastStableV4 = 0;
 
+float lastADCV1 = 0;
+float lastADCV2 = 0;
+float lastADCV3 = 0;
+float lastADCV4 = 0;
+
 bool buzzerstate = false;
 bool ledstate = false;
 bool recoverystate = false ;
 bool relaystate = false ;
 bool relaydelayrun = false ;
+bool sensordisFault = false;
+bool sensor1disFault = false;
+bool sensor2disFault = false;
+bool sensor3disFault = false;
+bool sensor4disFault = false;
+bool invalidreadingfault = false;
+bool adcfrozen = false ;
+bool relaymismatchfault = false;
+
+enum WatchdogSource
+{
+  WD_NONE,
+  WD_BATTERY,
+  WD_RUNTIME,
+  WD_SCREEN,
+  WD_LCD,
+  WD_SERIAL,
+  WD_RELAY,
+  WD_LED,
+  WD_BUZZER
+};
+
+bool watchdogfault = false;
+WatchdogSource watchdogSource = WD_NONE;
 
 enum batterystate
 {
@@ -163,16 +210,30 @@ void setup() {
 void loop() {
 
   batterytask();
+  Runtimetask();
   Screentask();
   lcdtask();
   serialtask();
   buzzertask();
   relaytask();
-  ledtask();
-  Runtimetask();
-}
+  ledtask(); } 
+   void Runtimetask()
+{
+  if (millis() - runtimeTimer >= runtimeInterval)
+    {
+      runtimeTimer = millis();
 
-  void batterytask()
+    runtimeADCCheck_SensorCheck();
+    runtimeInvalidReadingCheck();
+    runtimeRelayCheck();
+    runtimeWatchdogCheck();
+    runtimeModeManager();
+    // runtimeRecoveryManager();
+    // runtimeLogger();
+    runtimeheartbeat = millis();
+    }}
+
+void batterytask()
 {
    if (millis() - batteryTimer >= batteryInterval)
     {
@@ -232,11 +293,11 @@ if(v4<minVoltage){
         minCell=4;
     }
     
-     packVoltage=v1+v2+v3+v4; //pack voltage calculation
-
+    packVoltage=v1+v2+v3+v4; //pack voltage calculation
+ 
     averageVoltage=packVoltage/4.0; //average voltage calculation
 
-     imbalance=((maxVoltage-minVoltage)/averageVoltage)*100;
+    imbalance=((maxVoltage-minVoltage)/averageVoltage)*100;
 
 
 if (v1>2.9 || v2>2.9 || v3>2.9 || v4>2.9)  {
@@ -335,9 +396,6 @@ else if (weakCellFault){
 else if (voltageSpikeFault){
   currentState = warning;
 }
-// else if (imbalance>20){
-//   currentState = warning;
-// }
 
 bool anyfault = weakCellFault || overVoltageFault|| voltageSpikeFault || sensorFault ;
 if (anyfault){
@@ -354,28 +412,225 @@ else {
     rs = 1 ;
   }
 }
+ batteryheartbeat = millis();
 }
 }
  
-  void Runtimetask(){
-    bool sensordisfault = false ;
+void runtimeModeManager()
+{
+  if(watchdogfault)
+   {
+    currentRuntimemode = Shutdown;
+   }
+  else if (adcfrozen || relaymismatchfault)
+   {
+    currentRuntimemode = Failsafe;
+   }
+  else if ( invalidreadingfault)
+   {
+    currentRuntimemode = Degraded;
+   }
+  else
+   {
+    currentRuntimemode = Normal;
+   }
+}
 
-     if (abs(v1 - lastStableV1) > sensorChangeThreshold)
-     {
-      lastStableV1 = v1 ;
-      sensorFreezeTimer1 = millis();
-     }
-     else 
-     {
-      if (millis() - sensorFreezeTimer1 > sensorFreezeTime){
-        sensordisfault = true;
-      }
-     }
+//Runtime task code from here 
+void runtimeADCCheck_SensorCheck(){
+    // ADC Frozen fault 
+  bool adcChanged = false;
 
-    sensorFault = sensordisfault;
+  if(abs(v1-lastADCV1) > adcChangeThreshold)
+    adcChanged = true;
+
+  if(abs(v2-lastADCV2) > adcChangeThreshold)
+    adcChanged = true;
+
+  if(abs(v3-lastADCV3) > adcChangeThreshold)
+    adcChanged = true;
+
+  if(abs(v4-lastADCV4) > adcChangeThreshold)
+    adcChanged = true;
+      
+    if(adcChanged)
+  {
+    lastADCV1 = v1;
+    lastADCV2 = v2;
+    lastADCV3 = v3;
+    lastADCV4 = v4;
+
+    adcfreezeTimer = millis();
+
+    adcfrozen = false;
   }
+  else
+{
+    if(millis() - adcfreezeTimer >= adcFreezeTime)
+    {
+        adcfrozen = true;
+    }
+}
+if (adcfrozen){
+  sensor1disFault = false;
+  sensor2disFault = false;
+  sensor3disFault = false;
+  sensor4disFault = false;
+  sensordisFault = false ;
+}
+
+else
+{
+//1st sensor   sensor fault
+
+    if (abs(v1 - lastStableV1) > sensorChangeThreshold)
+{
+    lastStableV1 = v1;
+    sensorFreezeTimer1 = millis();
+    sensor1disFault = false;
+    
+}
+else
+{
+    if (millis() - sensorFreezeTimer1 >= sensorFreezeTime)
+    {
+        sensor1disFault = true;
+    }
+}
+
+//2nd sensor
+
+  if (abs(v2 - lastStableV2) > sensorChangeThreshold)
+{
+    lastStableV2 = v2;
+    sensorFreezeTimer2 = millis();
+    sensor2disFault = false;
+}
+else
+{
+    if (millis() - sensorFreezeTimer2 >= sensorFreezeTime)
+    {
+        sensor2disFault = true;
+    }
+}
+
+//3rd sensor
+
+  if (abs(v3 - lastStableV3) > sensorChangeThreshold)
+{
+    lastStableV3 = v3;
+    sensorFreezeTimer3 = millis();
+    sensor3disFault = false;
+}
+else
+{
+    if (millis() - sensorFreezeTimer3 >= sensorFreezeTime)
+    {
+        sensor3disFault = true;
+    }
+}
+
+//4th sensor
+
+  if (abs(v4 - lastStableV4) > sensorChangeThreshold)
+{
+    lastStableV4 = v4;
+    sensorFreezeTimer4 = millis();
+    sensor4disFault = false;
+}
+else
+{
+    if (millis() - sensorFreezeTimer4 >= sensorFreezeTime)
+    {
+        sensor4disFault = true;
+    }
+}
+ 
+ sensordisFault = sensor1disFault || sensor2disFault || sensor3disFault || sensor4disFault;
+} }  
+
+void runtimeInvalidReadingCheck() {
+// invalid reading fault  used 2.9 or 0.01 as because wokwi have no more value like ral bettery 
+ invalidreadingfault =
+  v1 <= 0.01 || v1 >=2.9 || isnan(v1)|| isinf(v1) || 
+  v2 <= 0.01 || v2 >=2.9 || isnan(v2)|| isinf(v2) || 
+  v3 <= 0.01 || v3 >=2.9 || isnan(v3)|| isinf(v3) || 
+  v4 <= 0.01 || v4 >=2.9 || isnan(v4)|| isinf(v4) ;
+    
+}
+
+void runtimeRelayCheck() {
+  //Relay mismatch fault detection
+   bool relayfeedbackstate;
+   bool desiredrelaystate;
+
+   desiredrelaystate = relaystate;
+
+   // Wokwi Testing 
+   relayfeedbackstate = relaystate; 
+
+   // Assuming  have a pin to read the relay state for real hardware 
+   //relayfeedbackstate = digitalRead(Relay_pin); 
+
+   relaymismatchfault = ( desiredrelaystate != relayfeedbackstate );
+} 
+
+void runtimeWatchdogCheck()
+{
+    watchdogfault = false;
+    watchdogSource = WD_NONE;
+
+    if (millis() - batteryheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_BATTERY;
+    }
+
+    else if (millis() - runtimeheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_RUNTIME;
+    }
+
+    else if (millis() - screenheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_SCREEN;
+    }
+
+    else if (millis() - lcdheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_LCD;
+    }
+
+    else if (millis() - serialheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_SERIAL;
+    }
+
+    else if (millis() - relayheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_RELAY;
+    }
+
+    else if (millis() - ledheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_LED;
+    }
+
+    else if (millis() - buzzerheartbeat > watchdogTimeout)
+    {
+        watchdogfault = true;
+        watchdogSource = WD_BUZZER;
+    }
+}
+
 // Buzzer Task starts for Task 2 
-  void buzzertask() {
+void buzzertask() {
   
  if (millis() - buzzerTimer >= buzzerInterval) {
     buzzerTimer = millis();
@@ -412,13 +667,13 @@ case failure:
     digitalWrite(Buzzer, 1);
     break;
 }
-
+buzzerheartbeat = millis();
 
 }
   }
 
 //LED Task code from here
-  void ledtask() {
+void ledtask() {
   
  if (millis() - ledTimer >= ledInterval) {
     ledTimer = millis();
@@ -457,13 +712,13 @@ case failure:
     digitalWrite(RED_LED, 1);
     break;
 }
-
+ledheartbeat = millis();
 
 }
   }
 
-     //Relay Task code from here For Task 2 Only for Faults and relay chatter 
-  void relaytask()
+//Relay Task code from here For Task 2 Only for Faults and relay chatter 
+void relaytask()
 {
     if(millis() - relayTimer >= relayInterval)
     {
@@ -502,17 +757,20 @@ if(desiredRelayState != relaystate)
    {
         relaydelayrun = false;
     }
+    relayheartbeat = millis();  
     }
 }
 
-        // Serial Task code from here for Task 1 and Task 2
+// Serial Task code from here for Task 1 and Task 2
 void serialtask()
 {
   if (millis() - serialTimer >= serialInterval) {
     serialTimer = millis(); 
 
-                                              // Task 1 
-
+                                            // Task 1 
+  Serial.println("-------------------------");
+  Serial.println("BMS By Aman");
+  Serial.println("-------------------------");
   Serial.print("C1 : ");
   Serial.println(v1);
   Serial.print("C2 : ");
@@ -581,11 +839,96 @@ switch(currentState)
         Serial.println("FAILURE");
         break;
  }
-}
-}
+ if (adcfrozen)
+   Serial.println("ADC Frozen");
+
+ if (sensor1disFault)
+   Serial.println("Sensor 1 disconnected");
+
+ if (sensor2disFault)
+   Serial.println("Sensor 2 disconnected");
+
+if (sensor3disFault)
+   Serial.println("Sensor 3 disconnected");
+
+ if (sensor4disFault)
+   Serial.println("Sensor 4 disconnected");
+
+ if (invalidreadingfault)
+  Serial.println("invalid reading");
+
+  if (relaymismatchfault)
+  Serial.println("Relay Mismatch Fault");
+  else 
+  Serial.println("Relay Feedback Normal");
+  
+  switch (watchdogSource){
+    case WD_BATTERY:
+      Serial.println("WD Battery Fault");
+      break;
+
+    case WD_RUNTIME:
+      Serial.println("WD Runtime Fault");
+      break;
+
+    case WD_SCREEN:
+      Serial.println("WD Screen Fault");
+      break;
+
+    case WD_LCD:
+      Serial.println("WD LCD Fault");
+      break;
+
+    case WD_SERIAL:
+      Serial.println("WD Serial Fault");
+      break;
+
+    case WD_BUZZER:
+      Serial.println("WD Buzzer Fault");
+      break;
+
+    case WD_RELAY:
+      Serial.println("WD Relay Fault");
+      break;
+
+    case WD_LED:
+      Serial.println("WD LED Fault");
+      break;
+
+    case WD_NONE:
+    default:
+      Serial.println("Watchdog Normal");
+      break;
+  }
+
+  Serial.print("Runtime Mode: ");
+  switch (currentRuntimemode)
+  {
+    case Normal:
+      Serial.println("Normal");
+      break;
+
+    case Degraded:
+      Serial.println("Degraded");
+      break;
+
+    case Failsafe:
+      Serial.println("Failsafe");
+      break;
+
+    case Shutdown:
+      Serial.println("Shutdown");
+      break;
+  }
+  
+
+  serialheartbeat = millis();
+}}
+ 
 
 // Screen Task code from here for Task 2
 void Screentask() {
+    screenheartbeat = millis();
 
    bool anyFault = weakCellFault || overVoltageFault || sensorFault || voltageSpikeFault;
 
@@ -629,8 +972,8 @@ void Screentask() {
         currentScreen = Cell_Screen;
         break;
       }
-}
-}
+    
+}}
 
 // LCD Task code from here for Task 2
 void lcdtask() {
@@ -764,6 +1107,9 @@ void lcdtask() {
    break;
 
    }
+   lcdheartbeat = millis();
 }
 }
+
+
 
