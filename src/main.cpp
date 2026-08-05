@@ -46,15 +46,17 @@ void buzzertask();
 void relaytask();
 void ledtask(); 
 void Runtimetask();
-void runtimeADCCheck_SensorCheck();
+void runtimeADCCheck();
+void runtimeSensorCheck();
 void runtimeInvalidReadingCheck();
 void runtimeRelayCheck();
 void runtimeWatchdogCheck();
 void runtimeModeManager();
 void runtimefaultisolation();
 void faultmodulation();
+void runtimeLogger();
 // void runtimeRecoveryManager();
-// void runtimeLogger();
+
 
 unsigned long batteryTimer = 0;
 unsigned long lcdTimer = 0;
@@ -75,7 +77,7 @@ unsigned long sensorFreezeTimer3 = 0;
 unsigned long sensorFreezeTimer4 = 0;
 unsigned long adcfreezeTimer = 0;
 unsigned long runtimeTimer = 0;
-
+unsigned long adcFreezeTimer;
 //Watchdog 
 unsigned long batteryheartbeat = 0;
 unsigned long runtimeheartbeat = 0;
@@ -110,7 +112,7 @@ const unsigned long watchdogTimeout = 6000;
 // faults
 bool weakCellFault = false;
 bool overVoltageFault = false;
-bool sensorFault = false;
+bool batterySensorFault = false;
 bool voltageSpikeFault = false;
  
 
@@ -130,6 +132,12 @@ float lastADCV1 = 0;
 float lastADCV2 = 0;
 float lastADCV3 = 0;
 float lastADCV4 = 0;
+
+int lastRaw1;
+int lastRaw2;
+int lastRaw3;
+int lastRaw4;
+
 
 bool buzzerstate = false;
 bool ledstate = false;
@@ -171,6 +179,7 @@ bool buzzercontrolenable = true ;
 bool serialcontrolenable = true;
 
 
+
 enum WatchdogSource
 {
   WD_NONE,
@@ -207,6 +216,25 @@ enum batterystate
  };
 
  Runtimemode currentRuntimemode = Normal ;
+ //logger 
+// Previous Runtime Fault States
+
+bool lastSensor1Fault = false;
+bool lastSensor2Fault = false;
+bool lastSensor3Fault = false;
+bool lastSensor4Fault = false;
+
+bool lastInvalidCell1 = false;
+bool lastInvalidCell2 = false;
+bool lastInvalidCell3 = false;
+bool lastInvalidCell4 = false;
+
+bool lastADCFrozen = false;
+bool lastRelayMismatch = false;
+bool lastWatchdogFault = false;
+
+// Previous Runtime Mode
+Runtimemode lastRuntimeMode = Normal;
 
  enum Screen
  {
@@ -372,10 +400,30 @@ else {
 // WEAK CELL 
 
 weakCellFault = false;
-if(cell1valid && v1 < 0.7) weakCellFault = true;
-if(cell2valid && v2 < 0.7) weakCellFault = true;
-if(cell3valid && v3 < 0.7) weakCellFault = true;
-if(cell4valid && v4 < 0.7) weakCellFault = true;
+
+if(cell1valid)
+{
+    if(v1 < 0.7)
+        weakCellFault = true;
+}
+
+if(cell2valid)
+{
+    if(v2 < 0.7)
+        weakCellFault = true;
+}
+
+if(cell3valid)
+{
+    if(v3 < 0.7)
+        weakCellFault = true;
+}
+
+if(cell4valid)
+{
+    if(v4 < 0.7)
+        weakCellFault = true;
+}
 
 // over voltage fault
 
@@ -386,19 +434,31 @@ if(cell3valid && v3 > 2.8) overVoltageFault = true;
 if(cell4valid && v4 > 2.8) overVoltageFault = true;
 
 // sesnor fault
-sensorFault = false;
+batterySensorFault = false;
 
-if(cell1valid && (v1 < 0.05 || v1 >= 3.1))
-    sensorFault = true;
+if(cell1valid)
+{
+    if(v1 < 0.05 || v1 >= 3.1)
+        batterySensorFault = true;
+}
 
-if (cell2valid && (v2 < 0.05 || v2 >= 3.1))
-  sensorFault = true ;
+if(cell2valid)
+{
+    if(v2 < 0.05 || v2 >= 3.1)
+        batterySensorFault = true;
+}
 
-if(cell3valid && (v3 < 0.05 || v3 >= 3.1))
-    sensorFault = true;
+if(cell3valid)
+{
+    if(v3 < 0.05 || v3 >= 3.1)
+        batterySensorFault = true;
+}
 
-if (cell4valid && (v4 < 0.05 || v4 >= 3.1))
-  sensorFault = true ;
+if(cell4valid)
+{
+    if(v4 < 0.05 || v4 >= 3.1)
+        batterySensorFault = true;
+}
 
 
 // voltage spike fault
@@ -440,7 +500,7 @@ if (voltageSpikeFault &&
 
 //Logic to set the current state based on the faults detected
 
-if (sensorFault){
+if (batterySensorFault){
   currentState = failure;
 
 }
@@ -454,7 +514,7 @@ else if (voltageSpikeFault){
   currentState = warning;
 }
 
-bool anyfault = weakCellFault || overVoltageFault|| voltageSpikeFault || sensorFault ;
+bool anyfault = weakCellFault || overVoltageFault|| voltageSpikeFault || batterySensorFault ;
 if (anyfault){
   recoverystate = false;
 }
@@ -480,157 +540,169 @@ void Runtimetask()
     {
       runtimeTimer = millis();
 
-    runtimeADCCheck_SensorCheck();
+    runtimeADCCheck();
+    runtimeSensorCheck();
     runtimeInvalidReadingCheck();
     runtimeRelayCheck();
     runtimeWatchdogCheck();
     runtimeModeManager();
     runtimefaultisolation();
     faultmodulation();
+     runtimeLogger();
     // runtimeRecoveryManager();
-    // runtimeLogger();
+    
     runtimeheartbeat = millis();
     }}
 
 void runtimeModeManager()
 {
-  if(watchdogfault)
-   {
-    currentRuntimemode = Shutdown;
-   }
-  else if (adcfrozen || relaymismatchfault)
-   {
-    currentRuntimemode = Failsafe;
-   }
-  else if (sensordisFault || invalidreadingcell1 || invalidreadingcell2 || invalidreadingcell3 || invalidreadingcell4)
-   {
-    currentRuntimemode = Degraded;
-   }
-  else
-   {
+    // Highest Priority
+    if (watchdogfault)
+    {
+        currentRuntimemode = Shutdown;
+        return;
+    }
+
+    // Serious Hardware Faults
+    if (adcfrozen || relaymismatchfault)
+    {
+        currentRuntimemode = Failsafe;
+        return;
+    }
+
+    // Recoverable Faults
+    if (sensordisFault ||
+        invalidreadingcell1 ||
+        invalidreadingcell2 ||
+        invalidreadingcell3 ||
+        invalidreadingcell4)
+    {
+        currentRuntimemode = Degraded;
+        return;
+    }
+
+    // Healthy
     currentRuntimemode = Normal;
-   }
 }
 
-void runtimeADCCheck_SensorCheck(){
-    // ADC Frozen fault 
-  bool adcChanged = false;
+void runtimeADCCheck()
+{
+    int raw1 = analogRead(CELL1_PIN);
+    int raw2 = analogRead(CELL2_PIN);
+    int raw3 = analogRead(CELL3_PIN);
+    int raw4 = analogRead(CELL4_PIN);
 
-  if(abs(v1-lastADCV1) > adcChangeThreshold)
-    adcChanged = true;
+    bool adcChanged = false;
 
-  if(abs(v2-lastADCV2) > adcChangeThreshold)
-    adcChanged = true;
+    if(raw1 != lastRaw1) adcChanged = true;
+    if(raw2 != lastRaw2) adcChanged = true;
+    if(raw3 != lastRaw3) adcChanged = true;
+    if(raw4 != lastRaw4) adcChanged = true;
 
-  if(abs(v3-lastADCV3) > adcChangeThreshold)
-    adcChanged = true;
-
-  if(abs(v4-lastADCV4) > adcChangeThreshold)
-    adcChanged = true;
-      
     if(adcChanged)
-  {
-    lastADCV1 = v1;
-    lastADCV2 = v2;
-    lastADCV3 = v3;
-    lastADCV4 = v4;
-
-    adcfreezeTimer = millis();
-
-    adcfrozen = false;
-  }
-  else
-{
-    if(millis() - adcfreezeTimer >= adcFreezeTime)
     {
-        adcfrozen = true;
+        lastRaw1 = raw1;
+        lastRaw2 = raw2;
+        lastRaw3 = raw3;
+        lastRaw4 = raw4;
+
+        adcFreezeTimer = millis();
+
+        adcfrozen = false;
+    }
+    else
+    {
+        if(millis() - adcFreezeTimer >= adcFreezeTime)
+        {
+            adcfrozen = true;
+        }
     }
 }
-if (adcfrozen){
-  sensor1disFault = false;
-  sensor2disFault = false;
-  sensor3disFault = false;
-  sensor4disFault = false;
-  sensordisFault = false ;
-}
 
-else
+void runtimeSensorCheck()
 {
-//1st sensor   sensor fault
-
-    if (abs(v1 - lastStableV1) > sensorChangeThreshold)
-{
-    lastStableV1 = v1;
-    sensorFreezeTimer1 = millis();
     sensor1disFault = false;
-    
-}
-else
-{
-    if (millis() - sensorFreezeTimer1 >= sensorFreezeTime)
-    {
-        sensor1disFault = true;
-    }
-}
-
-//2nd sensor
-
-  if (abs(v2 - lastStableV2) > sensorChangeThreshold)
-{
-    lastStableV2 = v2;
-    sensorFreezeTimer2 = millis();
     sensor2disFault = false;
-}
-else
-{
-    if (millis() - sensorFreezeTimer2 >= sensorFreezeTime)
-    {
-        sensor2disFault = true;
-    }
-}
-
-//3rd sensor
-
-  if (abs(v3 - lastStableV3) > sensorChangeThreshold)
-{
-    lastStableV3 = v3;
-    sensorFreezeTimer3 = millis();
     sensor3disFault = false;
-}
-else
-{
-    if (millis() - sensorFreezeTimer3 >= sensorFreezeTime)
-    {
-        sensor3disFault = true;
-    }
-}
-
-//4th sensor
-
-  if (abs(v4 - lastStableV4) > sensorChangeThreshold)
-{
-    lastStableV4 = v4;
-    sensorFreezeTimer4 = millis();
     sensor4disFault = false;
-}
-else
-{
-    if (millis() - sensorFreezeTimer4 >= sensorFreezeTime)
-    {
-        sensor4disFault = true;
-    }
-}
- 
- sensordisFault = sensor1disFault || sensor2disFault || sensor3disFault || sensor4disFault;
-} }  
 
-void runtimeInvalidReadingCheck() {
-// invalid reading fault  used 2.9 or 0.01 as because wokwi have no more value like ral bettery 
- invalidreadingcell1 = (v1 <= 0.01 || v1 >=2.9 || isnan(v1)|| isinf(v1) );
- invalidreadingcell2 = (v2 <= 0.01 || v2 >=2.9 || isnan(v2)|| isinf(v2) );
- invalidreadingcell3 = (v3 <= 0.01 || v3 >=2.9 || isnan(v3)|| isinf(v3) );
- invalidreadingcell4 = (v4 <= 0.01 || v4 >=2.9 || isnan(v4)|| isinf(v4) );
-    
+    int raw1 = analogRead(CELL1_PIN);
+    int raw2 = analogRead(CELL2_PIN);
+    int raw3 = analogRead(CELL3_PIN);
+    int raw4 = analogRead(CELL4_PIN);
+
+    if(raw1 <= 5 || raw1 >= 4090)
+        sensor1disFault = true;
+
+    if(raw2 <= 5 || raw2 >= 4090)
+        sensor2disFault = true;
+
+    if(raw3 <= 5 || raw3 >= 4090)
+        sensor3disFault = true;
+
+    if(raw4 <= 5 || raw4 >= 4090)
+        sensor4disFault = true;
+
+ sensordisFault = sensor1disFault || sensor2disFault || sensor3disFault || sensor4disFault;
+} 
+
+void runtimeInvalidReadingCheck()
+{
+    // Cell 1
+    if(sensor1disFault)
+    {
+         invalidreadingcell1 =
+            (v1 <= 0.05) ||
+            (v1 >= 2.9) ||
+            isnan(v1) ||
+            isinf(v1);
+    }
+    else
+    {
+       invalidreadingcell1= false;
+    }
+
+    // Cell 2
+    if(sensor2disFault)
+    {
+        invalidreadingcell2 = false;
+    }
+    else
+    {
+        invalidreadingcell2 =
+            (v2 <= 0.05) ||
+            (v2 >= 2.9) ||
+            isnan(v2) ||
+            isinf(v2);
+    }
+
+    // Cell 3
+    if(sensor3disFault)
+    {
+        invalidreadingcell3 = false;
+    }
+    else
+    {
+        invalidreadingcell3 =
+            (v3 <= 0.05) ||
+            (v3 >= 2.9) ||
+            isnan(v3) ||
+            isinf(v3);
+    }
+
+    // Cell 4
+    if(sensor4disFault)
+    {
+        invalidreadingcell4 = false;
+    }
+    else
+    {
+        invalidreadingcell4 =
+            (v4 <= 0.05) ||
+            (v4 >= 2.9) ||
+            isnan(v4) ||
+            isinf(v4);
+    }
 }
 
 void runtimeRelayCheck() {
@@ -705,25 +777,54 @@ void runtimeWatchdogCheck()
 
 void runtimefaultisolation()
 {
-cell1valid = !sensor1disFault && !invalidreadingcell1 && !adcfrozen;
-cell2valid = !sensor2disFault && !invalidreadingcell2 && !adcfrozen;
-cell3valid = !sensor3disFault && !invalidreadingcell3 && !adcfrozen;
-cell4valid = !sensor4disFault && !invalidreadingcell4 && !adcfrozen;
+cell1valid = !sensor1disFault && !invalidreadingcell1;
+cell2valid = !sensor2disFault && !invalidreadingcell2;
+cell3valid = !sensor3disFault && !invalidreadingcell3 ;
+cell4valid = !sensor4disFault && !invalidreadingcell4 ;
 }
 
-void faultmodulation(){
-   relaycontrolenable = true ;
-   lcdcontrolenable = true ;
-   ledcontrolenable =true;
-   buzzercontrolenable = true ;
-   screencontrolenable =true ;
-   serialcontrolenable = true;
+void faultmodulation()
+{
+    // Default
+    relaycontrolenable = true;
+    lcdcontrolenable = true;
+    screencontrolenable = true;
+    serialcontrolenable = true;
+    ledcontrolenable = true;
+    buzzercontrolenable = true;
 
-    if(relaymismatchfault)
-        relaycontrolenable = false;
+    switch(currentRuntimemode)
+    {
+        case Normal:
+            break;
 
-    if(watchdogSource == WD_RELAY)
-        relaycontrolenable = false;
+        case Degraded:
+            // Healthy modules continue
+            break;
+
+        case Failsafe:
+
+            relaystate = true;   
+             digitalWrite(Relay, HIGH);         // Open relay
+            relaycontrolenable = false;
+
+            break;
+
+        case Shutdown:
+
+            relaystate = true;
+
+            relaycontrolenable = false;
+            screencontrolenable = false;
+            ledcontrolenable = false;
+            buzzercontrolenable = false;
+
+            break;
+
+            
+    }
+
+    // Individual module failures override runtime mode
 
     if(watchdogSource == WD_LCD)
         lcdcontrolenable = false;
@@ -739,8 +840,137 @@ void faultmodulation(){
 
     if(watchdogSource == WD_BUZZER)
         buzzercontrolenable = false;
+
+    if(relaymismatchfault)
+        relaycontrolenable = false;
+
+        
 }
 
+void runtimeLogger()
+{
+
+ // for invalid readings
+if(invalidreadingcell1 != lastInvalidCell1)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
+
+    if(invalidreadingcell1)
+        Serial.println("Cell 1 Invalid Reading");
+    else
+        Serial.println("Cell 1 Reading Normal");
+
+    lastInvalidCell1 = invalidreadingcell1;
+}
+else
+  invalidreadingcell1 = false ;
+
+// if (invalidreadingcell2 != lastInvalidCell2)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(invalidreadingcell2)
+//         Serial.println("Cell 2 Invalid Reading");
+//     else
+//         Serial.println("Cell 2 Reading Normal");
+
+//     lastInvalidCell2 = invalidreadingcell2;
+
+// }
+// if (invalidreadingcell3 != lastInvalidCell3)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(invalidreadingcell3)
+//         Serial.println("Cell 3 Invalid Reading");
+//     else
+//         Serial.println("Cell 3 Reading Normal");
+
+//     lastInvalidCell3 = invalidreadingcell3; 
+// }
+// if (invalidreadingcell4 != lastInvalidCell4)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(invalidreadingcell4)
+//         Serial.println("Cell 4 Invalid Reading");
+//     else
+//         Serial.println("Cell 4 Reading Normal");
+
+//     lastInvalidCell4 = invalidreadingcell4;
+// }
+
+//    if(sensor1disFault != lastSensor1Fault)
+// {
+//     if(sensor1disFault)
+//     {
+//         Serial.print("[");
+//         Serial.print(millis());
+//         Serial.println(" ms] Sensor 1 Disconnected");
+//     }
+//     else
+//     {
+//         Serial.print("[");
+//         Serial.print(millis());
+//         Serial.println(" ms] Sensor 1 Recovered");
+//     }
+
+//     lastSensor1Fault = sensor1disFault;
+// }
+
+// if(sensor2disFault != lastSensor2Fault)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(sensor2disFault)
+//         Serial.println("Sensor 2 Disconnected");
+//     else
+//         Serial.println("Sensor 2 Recovered");
+
+//     lastSensor2Fault = sensor2disFault;
+// }
+
+// if(sensor3disFault != lastSensor3Fault)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(sensor3disFault)
+//         Serial.println("Sensor 3 Disconnected");
+//     else
+//         Serial.println("Sensor 3 Recovered");
+
+//     lastSensor3Fault = sensor3disFault;
+// }
+
+// if(sensor4disFault != lastSensor4Fault)
+// {
+//     Serial.print("[");
+//     Serial.print(millis());
+//     Serial.print(" ms] ");
+
+//     if(sensor4disFault)
+//         Serial.println("Sensor 4 Disconnected");
+//     else
+//         Serial.println("Sensor 4 Recovered");
+
+//     lastSensor4Fault = sensor4disFault;
+
+// }
+
+   
+}
 // Buzzer Task starts for Task 2 
 void buzzertask() {
   if (!buzzercontrolenable)
@@ -930,8 +1160,8 @@ void serialtask(){
   if (overVoltageFault) {
     Serial.println("Over Voltage Fault Detected!");
   }
-  if (sensorFault) {
-    Serial.println("Sensor Fault Detected!");
+  if (batterySensorFault) {
+    Serial.println("Battery Sensor Fault Detected!");
   }
   if (voltageSpikeFault) {
     Serial.println("Voltage Spike Fault Detected!");
@@ -962,6 +1192,9 @@ switch(currentState)
  if (adcfrozen)
    Serial.println("ADC Frozen");
 
+ if (batterySensorFault)
+   Serial.println("Battery Sensor Fault Detected!");
+
  if (sensor1disFault)
    Serial.println("Sensor 1 disconnected");
 
@@ -973,6 +1206,7 @@ if (sensor3disFault)
 
  if (sensor4disFault)
    Serial.println("Sensor 4 disconnected");
+   
 
  if (invalidreadingcell1)
    Serial.println("Invalid reading on Cell 1");
@@ -1046,6 +1280,21 @@ if (sensor3disFault)
       Serial.println("Shutdown");
       break;
   }
+  if(adcfrozen)
+    lcd.print("ADC Frozen");
+
+else if(relaymismatchfault)
+    lcd.print("Relay Fault");
+
+else if(batterySensorFault)
+    lcd.print("Battery Sensor Fault");
+
+else if(invalidreadingcell1 || invalidreadingcell2 ||
+        invalidreadingcell3 || invalidreadingcell4)
+    lcd.print("Invalid Read");
+
+else if(watchdogfault)
+    lcd.print("Watchdog");
   
 
   serialheartbeat = millis();
@@ -1054,11 +1303,14 @@ if (sensor3disFault)
 
 // Screen Task code from here for Task 2
 void Screentask() {
+
+  screenheartbeat = millis();
+
   if(!screencontrolenable)
      return ;
-    screenheartbeat = millis();
+   
 
-   bool anyFault = weakCellFault || overVoltageFault || sensorFault || voltageSpikeFault;
+   bool anyFault = weakCellFault || overVoltageFault || batterySensorFault || voltageSpikeFault;
 
       if(anyFault) 
       {
@@ -1127,7 +1379,7 @@ void lcdtask() {
       lcd.print("FAULT:");
 
       lcd.setCursor(0,1);
-      if(sensorFault)
+      if(batterySensorFault)
           lcd.print("Sensor Fault");
 
       else if(overVoltageFault)
@@ -1239,6 +1491,3 @@ void lcdtask() {
    lcdheartbeat = millis();
   }
   }
-
-
-
