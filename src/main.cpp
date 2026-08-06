@@ -232,6 +232,10 @@ bool lastInvalidCell4 = false;
 bool lastADCFrozen = false;
 bool lastRelayMismatch = false;
 bool lastWatchdogFault = false;
+bool  waitingForRecoveryCell1 = false;
+bool  waitingForRecoveryCell2 = false;
+bool  waitingForRecoveryCell3 = false;
+bool  waitingForRecoveryCell4 = false;
 
 // Previous Runtime Mode
 Runtimemode lastRuntimeMode = Normal;
@@ -651,15 +655,15 @@ void runtimeInvalidReadingCheck()
     // Cell 1
     if(sensor1disFault)
     {
-         invalidreadingcell1 =
+        invalidreadingcell1 = false;
+    }
+    else
+    {
+        invalidreadingcell1 =
             (v1 <= 0.05) ||
             (v1 >= 2.9) ||
             isnan(v1) ||
             isinf(v1);
-    }
-    else
-    {
-       invalidreadingcell1= false;
     }
 
     // Cell 2
@@ -850,127 +854,162 @@ void faultmodulation()
 void runtimeLogger()
 {
 
- // for invalid readings
-if(invalidreadingcell1 != lastInvalidCell1)
+   if(sensor1disFault != lastSensor1Fault)
+{
+    if(sensor1disFault)
+    {
+        Serial.print("[");
+        Serial.print(millis());
+        Serial.println(" ms] Sensor 1 Disconnected");
+    }
+    else
+    {
+        Serial.print("[");
+        Serial.print(millis());
+        Serial.println(" ms] Sensor 1 Recovered");
+    }
+
+    lastSensor1Fault = sensor1disFault;
+}
+
+if(sensor2disFault != lastSensor2Fault)
 {
     Serial.print("[");
     Serial.print(millis());
     Serial.print(" ms] ");
 
-    if(invalidreadingcell1)
-        Serial.println("Cell 1 Invalid Reading");
+    if(sensor2disFault)
+        Serial.println("Sensor 2 Disconnected");
     else
-        Serial.println("Cell 1 Reading Normal");
+        Serial.println("Sensor 2 Recovered");
 
-    lastInvalidCell1 = invalidreadingcell1;
+    lastSensor2Fault = sensor2disFault;
 }
-else
-  invalidreadingcell1 = false ;
 
-// if (invalidreadingcell2 != lastInvalidCell2)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
+if(sensor3disFault != lastSensor3Fault)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
 
-//     if(invalidreadingcell2)
-//         Serial.println("Cell 2 Invalid Reading");
-//     else
-//         Serial.println("Cell 2 Reading Normal");
+    if(sensor3disFault)
+        Serial.println("Sensor 3 Disconnected");
+    else
+        Serial.println("Sensor 3 Recovered");
 
-//     lastInvalidCell2 = invalidreadingcell2;
-
-// }
-// if (invalidreadingcell3 != lastInvalidCell3)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
-
-//     if(invalidreadingcell3)
-//         Serial.println("Cell 3 Invalid Reading");
-//     else
-//         Serial.println("Cell 3 Reading Normal");
-
-//     lastInvalidCell3 = invalidreadingcell3; 
-// }
-// if (invalidreadingcell4 != lastInvalidCell4)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
-
-//     if(invalidreadingcell4)
-//         Serial.println("Cell 4 Invalid Reading");
-//     else
-//         Serial.println("Cell 4 Reading Normal");
-
-//     lastInvalidCell4 = invalidreadingcell4;
-// }
-
-//    if(sensor1disFault != lastSensor1Fault)
-// {
-//     if(sensor1disFault)
-//     {
-//         Serial.print("[");
-//         Serial.print(millis());
-//         Serial.println(" ms] Sensor 1 Disconnected");
-//     }
-//     else
-//     {
-//         Serial.print("[");
-//         Serial.print(millis());
-//         Serial.println(" ms] Sensor 1 Recovered");
-//     }
-
-//     lastSensor1Fault = sensor1disFault;
-// }
-
-// if(sensor2disFault != lastSensor2Fault)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
-
-//     if(sensor2disFault)
-//         Serial.println("Sensor 2 Disconnected");
-//     else
-//         Serial.println("Sensor 2 Recovered");
-
-//     lastSensor2Fault = sensor2disFault;
-// }
-
-// if(sensor3disFault != lastSensor3Fault)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
-
-//     if(sensor3disFault)
-//         Serial.println("Sensor 3 Disconnected");
-//     else
-//         Serial.println("Sensor 3 Recovered");
-
-//     lastSensor3Fault = sensor3disFault;
-// }
-
-// if(sensor4disFault != lastSensor4Fault)
-// {
-//     Serial.print("[");
-//     Serial.print(millis());
-//     Serial.print(" ms] ");
-
-//     if(sensor4disFault)
-//         Serial.println("Sensor 4 Disconnected");
-//     else
-//         Serial.println("Sensor 4 Recovered");
-
-//     lastSensor4Fault = sensor4disFault;
-
-// }
-
-   
+    lastSensor3Fault = sensor3disFault;
 }
+
+if(sensor4disFault != lastSensor4Fault)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
+
+    if(sensor4disFault)
+        Serial.println("Sensor 4 Disconnected");
+    else
+        Serial.println("Sensor 4 Recovered");
+
+    lastSensor4Fault = sensor4disFault;
+
+}
+
+// for invalid readings
+
+if (invalidreadingcell1 && !lastInvalidCell1)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 1 Invalid Reading");
+
+    waitingForRecoveryCell1 = true;
+}
+
+// Reading Normal (only after complete recovery)
+if (waitingForRecoveryCell1 &&!sensor1disFault &&!invalidreadingcell1 && lastInvalidCell1)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 1 Reading Normal");
+
+    waitingForRecoveryCell1 = false;
+}
+
+// Update previous state
+lastInvalidCell1 = invalidreadingcell1;
+
+if (invalidreadingcell2 && !lastInvalidCell2)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 2 Invalid Reading ");
+     waitingForRecoveryCell2 = true;
+}
+  if(waitingForRecoveryCell2 && !sensor2disFault && !invalidreadingcell2 && lastInvalidCell2 )
+  {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 2 Reading Normal");
+    waitingForRecoveryCell2 = false;
+  }
+    lastInvalidCell2 = invalidreadingcell2;
+
+
+if (invalidreadingcell3 && !lastInvalidCell3)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 3 Invalid Reading ");
+     waitingForRecoveryCell3 = true;
+}
+  if(waitingForRecoveryCell3 && !sensor3disFault && !invalidreadingcell3 && lastInvalidCell3 )
+  {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 3 Reading Normal");
+    waitingForRecoveryCell3 = false;
+  }
+    lastInvalidCell3 = invalidreadingcell3;
+
+if (invalidreadingcell4 && !lastInvalidCell4)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 4 Invalid Reading ");
+     waitingForRecoveryCell4 = true;
+}
+  if(waitingForRecoveryCell4 && !sensor4disFault && !invalidreadingcell4 && lastInvalidCell4 )
+  {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.println(" ms] Cell 4 Reading Normal");
+    waitingForRecoveryCell4 = false;
+  }
+    lastInvalidCell4 = invalidreadingcell4;
+
+    // adc frozen 
+
+if(adcfrozen != lastADCFrozen)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
+
+    if(adcfrozen)
+    {
+        Serial.println("ADC Frozen");
+    }
+    else
+    {
+        Serial.println("ADC Recovered");
+    }
+
+    lastADCFrozen = adcfrozen;
+}
+
+}
+
 // Buzzer Task starts for Task 2 
 void buzzertask() {
   if (!buzzercontrolenable)
