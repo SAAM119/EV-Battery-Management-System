@@ -1,8 +1,18 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <WiFi.h>
+
+#define BLYNK_TEMPLATE_ID "TMPL3OeO2rP-4"
+#define BLYNK_TEMPLATE_NAME "BMS"
+#define BLYNK_AUTH_TOKEN "VAcDENWLop4xdkfxA5EBXvO3AEnQl-dC"
+
+#include <BlynkSimpleEsp32.h>
 #include <LiquidCrystal_I2C.h>
 // 16x2 LCD on the usual I2C backpack address
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+char ssid[] = "Wokwi-GUEST";
+char pass[] = "";
 
 // ADC pins for the 4 cell taps (voltage dividers in front of these!)
 #define CELL1_PIN 34
@@ -16,6 +26,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 #define Buzzer 14
 #define I2C_SDA 21
 #define I2C_SCL 22
+#define EVENT_QUEUE_SIZE 10
 
 float Voltage;
 float averageVoltage;
@@ -55,8 +66,12 @@ void runtimeModeManager();
 void runtimefaultisolation();
 void faultmodulation();
 void runtimeLogger();
-// void runtimeRecoveryManager();
-
+void runtimeRecoveryManager();
+void WiFiTask();
+void telemetryEventDetector();
+void telemetrySendTask();
+void rssiTask();
+void dashboardTask();
 
 unsigned long batteryTimer = 0;
 unsigned long lcdTimer = 0;
@@ -78,6 +93,7 @@ unsigned long sensorFreezeTimer4 = 0;
 unsigned long adcfreezeTimer = 0;
 unsigned long runtimeTimer = 0;
 unsigned long adcFreezeTimer;
+unsigned long runtimeRecoveryTimer = 0;
 //Watchdog 
 unsigned long batteryheartbeat = 0;
 unsigned long runtimeheartbeat = 0;
@@ -87,6 +103,12 @@ unsigned long serialheartbeat = 0;
 unsigned long buzzerheartbeat = 0;
 unsigned long relayheartbeat = 0;
 unsigned long ledheartbeat = 0;
+
+// WIFI/BLYNK
+unsigned long wifiTimer = 0;
+unsigned long telemetrySendTimer = 0;
+unsigned long rssiTimer = 0;
+unsigned long dashboardTimer = 0;
 
 
 
@@ -107,7 +129,11 @@ const float adcChangeThreshold = 0.01;
 const unsigned long adcFreezeTime = 5000;
 const unsigned long runtimeInterval = 100;
 const unsigned long watchdogTimeout = 6000; 
-
+const unsigned long runtimeRecoveryDelay = 3000;
+const unsigned long wifirecoverytimer = 5000;
+const unsigned long telemetrySendInterval = 500;
+const unsigned long rssiInterval = 5000;
+const unsigned long dashboardInterval = 1000;
 
 // faults
 bool weakCellFault = false;
@@ -178,6 +204,10 @@ bool screencontrolenable = true ;
 bool buzzercontrolenable = true ;
 bool serialcontrolenable = true;
 
+//WIFI/BLYNK 
+bool WiFiconnected  = false ;
+bool lastblynkstate = false;
+
 
 
 enum WatchdogSource
@@ -216,6 +246,30 @@ enum batterystate
  };
 
  Runtimemode currentRuntimemode = Normal ;
+
+const char* getRuntimeModeName(Runtimemode mode)
+{
+  switch(mode)
+  {
+    case Normal: return "Normal";
+    case Degraded: return "Degraded";
+    case Failsafe: return "Failsafe";
+    case Shutdown: return "Shutdown";
+    default: return "Unknown";
+  }
+}
+
+const char* getStateName(batterystate state)
+{
+  switch(state)
+  {
+    case healthy: return "Healthy";
+    case warning: return "Warning";
+    case critical: return "Critical";
+    case failure: return "Failure";
+    default: return "Unknown";
+  }
+}
  //logger 
 // Previous Runtime Fault States
 
@@ -252,6 +306,60 @@ Runtimemode lastRuntimeMode = Normal;
 
  Screen currentScreen = Cell_Screen;
  Screen previousScreen = Cell_Screen;
+
+ enum TelemetryEventType
+{
+    EVENT_STATE_CHANGE,
+    EVENT_RUNTIME_CHANGE,
+    EVENT_SENSOR_FAULT,
+    EVENT_INVALID_READING,
+    EVENT_ADC_FROZEN,
+    EVENT_RELAY_MISMATCH,
+    EVENT_VOLTAGE_SPIKE,
+    EVENT_WATCHDOG
+};
+
+batterystate lastTelemetryState = healthy;
+Runtimemode lastTelemetryRuntimeMode = Normal;
+
+struct TelemetryEvent
+{
+    unsigned long timestamp;
+    TelemetryEventType type;
+
+    float packVoltage;
+    float averageVoltage;
+    float imbalance;
+
+    int cell;
+    int state;
+    int runtimeMode;
+
+    bool active;
+};
+
+
+TelemetryEvent eventQueue[EVENT_QUEUE_SIZE];
+
+int queueHead = 0;
+int queueTail = 0;
+int queueCount = 0;
+
+bool telemetryLastSensor1Fault = false;
+bool telemetryLastSensor2Fault = false;
+bool telemetryLastSensor3Fault = false;
+bool telemetryLastSensor4Fault = false;
+
+bool telemetryLastInvalid1 = false;
+bool telemetryLastInvalid2 = false;
+bool telemetryLastInvalid3 = false;
+bool telemetryLastInvalid4 = false;
+
+bool telemetryLastADCFrozen = false;
+bool telemetryLastRelayMismatch = false;
+bool telemetryLastWatchdogFault = false;
+bool telemetryLastVoltageSpike = false;
+
  
 void setup() {
   pinMode(RED_LED , OUTPUT);
@@ -265,6 +373,11 @@ void setup() {
 
  Serial.begin(115200);
   Serial.println("Voltage Demo Sim...");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass, 6);
+  Blynk.config( "VAcDENWLop4xdkfxA5EBXvO3AEnQl-dC");
+  Serial.println("Starting WiFi.....");
 }
 
 void loop() {
@@ -276,7 +389,14 @@ void loop() {
   serialtask();
   buzzertask();
   relaytask();
-  ledtask(); } 
+  ledtask(); 
+  WiFiTask();
+  telemetryEventDetector();
+  telemetrySendTask();
+  rssiTask();
+  dashboardTask();
+  Blynk.run();
+} 
 
 //Battery monitoring task
 void batterytask()
@@ -550,6 +670,7 @@ void Runtimetask()
     runtimeRelayCheck();
     runtimeWatchdogCheck();
     runtimeModeManager();
+    runtimeRecoveryManager();
     runtimefaultisolation();
     faultmodulation();
      runtimeLogger();
@@ -587,6 +708,50 @@ void runtimeModeManager()
 
     // Healthy
     currentRuntimemode = Normal;
+}
+
+void runtimeRecoveryManager(){
+    
+    if (currentRuntimemode == Normal)
+    {
+        // Already in normal mode, no recovery needed
+        return;
+    }
+    if(currentRuntimemode == Shutdown)
+    {
+     // In Shutdown mode, recovery is not allowed
+    return;
+    } 
+
+    // Check if all faults have cleared
+    bool allFaultsCleared = !watchdogfault &&
+                            !adcfrozen &&
+                            !relaymismatchfault &&
+                            !sensordisFault &&
+                            !invalidreadingcell1 &&
+                            !invalidreadingcell2 &&
+                            !invalidreadingcell3 &&
+                            !invalidreadingcell4;
+
+    if (allFaultsCleared)
+    {
+        // Start the recovery timer if not already running
+        if (runtimeRecoveryTimer == 0)
+        {
+            runtimeRecoveryTimer = millis();
+        }
+        else if (millis() - runtimeRecoveryTimer >= runtimeRecoveryDelay)
+        {
+            // Recovery delay has passed, switch to Normal mode
+            currentRuntimemode = Normal;
+            runtimeRecoveryTimer = 0; // Reset the timer
+        }
+    }
+    else
+    {
+        // Reset the recovery timer if any fault is present
+        runtimeRecoveryTimer = 0;
+    }
 }
 
 void runtimeADCCheck()
@@ -1006,6 +1171,117 @@ if(adcfrozen != lastADCFrozen)
     }
 
     lastADCFrozen = adcfrozen;
+}
+ // RELAY MIASTMATCH 
+
+ if(relaymismatchfault != lastRelayMismatch)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
+
+    if(relaymismatchfault)
+    {
+        Serial.println("Relay Mismatch Detected");
+    }
+    else
+    {
+        Serial.println("Relay Feedback Normal");
+    }
+
+    lastRelayMismatch = relaymismatchfault;
+}
+
+// WATCHDOG LOGGER
+
+
+if(watchdogfault != lastWatchdogFault)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] ");
+
+    if(watchdogfault)
+    {
+        switch(watchdogSource)
+        {
+            case WD_BATTERY:
+                Serial.println("Watchdog Timeout : Battery Task");
+                break;
+
+            case WD_RUNTIME:
+                Serial.println("Watchdog Timeout : Runtime Task");
+                break;
+
+            case WD_SCREEN:
+                Serial.println("Watchdog Timeout : Screen Task");
+                break;
+
+            case WD_LCD:
+                Serial.println("Watchdog Timeout : LCD Task");
+                break;
+
+            case WD_SERIAL:
+                Serial.println("Watchdog Timeout : Serial Task");
+                break;
+
+            case WD_RELAY:
+                Serial.println("Watchdog Timeout : Relay Task");
+                break;
+
+            case WD_LED:
+                Serial.println("Watchdog Timeout : LED Task");
+                break;
+
+            case WD_BUZZER:
+                Serial.println("Watchdog Timeout : Buzzer Task");
+                break;
+
+            default:
+                Serial.println("Watchdog Timeout");
+                break;
+        }
+    }
+    else
+    {
+        Serial.println("Watchdog Recovered");
+    }
+
+    lastWatchdogFault = watchdogfault;
+}
+
+// RUNTIME MODE LOGGER
+
+if(currentRuntimemode != lastRuntimeMode)
+{
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] Runtime Mode Changed : ");
+
+    switch(currentRuntimemode)
+    {
+        case Normal:
+            Serial.println("NORMAL");
+            break;
+
+        case Degraded:
+            Serial.println("DEGRADED");
+            break;
+
+        case Failsafe:
+            Serial.println("FAILSAFE");
+            break;
+
+        case Shutdown:
+            Serial.println("SHUTDOWN");
+            break;
+
+        default:
+            Serial.println("UNKNOWN");
+            break;
+    }
+
+    lastRuntimeMode = currentRuntimemode;
 }
 
 }
@@ -1530,3 +1806,497 @@ void lcdtask() {
    lcdheartbeat = millis();
   }
   }
+
+void WiFiTask()
+{
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        if (!WiFiconnected)
+        {
+            WiFiconnected = true;
+
+            Serial.println("WiFi Connected");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
+        }
+
+        if (!Blynk.connected())
+        {
+            Blynk.connect(5000);
+    }
+
+    bool blynkstate = Blynk.connected();
+    
+       if (blynkstate !=lastblynkstate) {
+        Serial.print("Blynk status: ");
+        Serial.println(Blynk.connected() ? "CONNECTED" : "DISCONNECTED");
+         lastblynkstate = blynkstate;
+       }
+          return;
+    }
+
+    if (WiFiconnected)
+    {
+        WiFiconnected = false;
+        Serial.println("WiFi Disconnected");
+    }
+
+    if (millis() - wifiTimer >= wifirecoverytimer)
+    {
+        wifiTimer = millis();
+
+        Serial.println("Attempting WiFi connection...");
+        WiFi.begin(ssid, pass, 6);
+    }
+
+  }
+
+  bool enqueueEvent(TelemetryEvent event);
+  bool dequeueEvent(TelemetryEvent &event);
+
+  bool enqueueEvent(TelemetryEvent event)
+  {
+    if (queueCount >= EVENT_QUEUE_SIZE)
+      return false;
+
+    eventQueue[queueTail] = event;
+
+    queueTail = (queueTail + 1) % EVENT_QUEUE_SIZE;
+    queueCount++;
+
+    return true;
+  }
+
+  bool dequeueEvent(TelemetryEvent &event)
+{
+    if (queueCount == 0)
+        return false;
+
+    event = eventQueue[queueHead];
+
+    queueHead = (queueHead + 1) % EVENT_QUEUE_SIZE;
+    queueCount--;
+
+    return true;
+}
+
+//telementary 
+void telemetryEventDetector()
+{
+    // Battery state change
+    if (currentState != lastTelemetryState)
+    {
+        TelemetryEvent event;
+
+        event.timestamp = millis();
+        event.type = EVENT_STATE_CHANGE;
+
+        event.packVoltage = packVoltage;
+        event.averageVoltage = averageVoltage;
+        event.imbalance = imbalance;
+
+        event.cell = minCell;
+        event.state = currentState;
+        event.runtimeMode = currentRuntimemode;
+
+        if (enqueueEvent(event))
+        {
+            Serial.println("---- TELEMETRY EVENT QUEUED ----");
+            Serial.print("Time: ");
+            Serial.print(event.timestamp);
+            Serial.println(" ms");
+
+            Serial.println("Event: STATE CHANGE");
+
+            Serial.print("Pack Voltage: ");
+            Serial.println(event.packVoltage, 2);
+
+            Serial.print("Average Voltage: ");
+            Serial.println(event.averageVoltage, 2);
+
+            Serial.print("Imbalance: ");
+            Serial.print(event.imbalance, 2);
+            Serial.println("%");
+
+            Serial.print("State: ");
+            Serial.println(getStateName(currentState));
+
+            Serial.print("Runtime Mode: ");
+            Serial.println(getRuntimeModeName(currentRuntimemode));
+
+            Serial.print("Queue Count: ");
+            Serial.println(queueCount);
+
+            Serial.println("-------------------------------");
+        }
+        else
+        {
+            Serial.println("TELEMETRY QUEUE FULL!");
+        }
+
+        lastTelemetryState = currentState;
+    }
+
+
+    // Runtime mode change
+   if (currentRuntimemode != lastTelemetryRuntimeMode)
+    {
+        TelemetryEvent event;
+
+        event.timestamp = millis();
+        event.type = EVENT_RUNTIME_CHANGE;
+
+        event.packVoltage = packVoltage;
+        event.averageVoltage = averageVoltage;
+        event.imbalance = imbalance;
+
+        event.cell = 0;
+        event.state = currentState;
+        event.runtimeMode = currentRuntimemode;
+
+        if (enqueueEvent(event))
+        {
+            Serial.println("---- TELEMETRY EVENT QUEUED ----");
+            Serial.print("Time: ");
+            Serial.print(event.timestamp);
+            Serial.println(" ms");
+
+            Serial.println("Event: RUNTIME MODE CHANGE");
+
+            Serial.print("Runtime Mode: ");
+            Serial.println(getRuntimeModeName(currentRuntimemode));
+
+            Serial.print("Queue Count: ");
+            Serial.println(queueCount);
+
+            Serial.println("-------------------------------");
+        }
+        else
+        {
+            Serial.println("TELEMETRY QUEUE FULL!");
+        }
+
+        lastTelemetryRuntimeMode = currentRuntimemode;
+    }
+    
+    bool sensorFaults[] = {
+    sensor1disFault,
+    sensor2disFault,
+    sensor3disFault,
+    sensor4disFault
+};
+
+bool *lastFaults[] = {
+    &telemetryLastSensor1Fault,
+    &telemetryLastSensor2Fault,
+    &telemetryLastSensor3Fault,
+    &telemetryLastSensor4Fault
+};
+
+for (int i = 0; i < 4; i++)
+{
+    if (sensorFaults[i] != *lastFaults[i])
+    {
+        TelemetryEvent event;
+
+        event.timestamp = millis();
+        event.type = EVENT_SENSOR_FAULT;
+
+        event.packVoltage = packVoltage;
+        event.averageVoltage = averageVoltage;
+        event.imbalance = imbalance;
+
+        event.cell = i + 1;
+        event.state = currentState;
+        event.runtimeMode = currentRuntimemode;
+        event.active = sensorFaults[i];
+
+        if (enqueueEvent(event))
+        {
+            Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+            Serial.print("Event: SENSOR ");
+            Serial.print(event.cell);
+
+            if (event.active)
+                Serial.println(" DISCONNECTED");
+            else
+                Serial.println(" RECOVERED");
+
+            Serial.print("Queue Count: ");
+            Serial.println(queueCount);
+
+            Serial.println("-------------------------------");
+        }
+
+        *lastFaults[i] = sensorFaults[i];
+    }
+}
+
+bool invalidReadings[] = {
+    invalidreadingcell1,
+    invalidreadingcell2,
+    invalidreadingcell3,
+    invalidreadingcell4
+};
+
+bool *lastInvalid[] = {
+    &telemetryLastInvalid1,
+    &telemetryLastInvalid2,
+    &telemetryLastInvalid3,
+    &telemetryLastInvalid4
+};
+
+for (int i = 0; i < 4; i++)
+{
+    if (invalidReadings[i] != *lastInvalid[i])
+    {
+        TelemetryEvent event;
+
+        event.timestamp = millis();
+        event.type = EVENT_INVALID_READING;
+
+        event.packVoltage = packVoltage;
+        event.averageVoltage = averageVoltage;
+        event.imbalance = imbalance;
+
+        event.cell = i + 1;
+        event.state = currentState;
+        event.runtimeMode = currentRuntimemode;
+        event.active = invalidReadings[i];
+
+        if (enqueueEvent(event))
+        {
+            Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+            Serial.print("Event: CELL ");
+            Serial.print(event.cell);
+
+            Serial.println(event.active ?
+                           " INVALID READING" :
+                           " READING RECOVERED");
+
+            Serial.print("Queue Count: ");
+            Serial.println(queueCount);
+
+            Serial.println("-------------------------------");
+        }
+
+        *lastInvalid[i] = invalidReadings[i];
+    }
+}
+
+
+if (adcfrozen != telemetryLastADCFrozen)
+{
+    TelemetryEvent event;
+
+    event.timestamp = millis();
+    event.type = EVENT_ADC_FROZEN;
+
+    event.packVoltage = packVoltage;
+    event.averageVoltage = averageVoltage;
+    event.imbalance = imbalance;
+
+    event.cell = 0;
+    event.state = currentState;
+    event.runtimeMode = currentRuntimemode;
+    event.active = adcfrozen;
+
+    if (enqueueEvent(event))
+    {
+        Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+        Serial.print("Event: ADC ");
+        Serial.println(event.active ? "FROZEN" : "RECOVERED");
+
+        Serial.print("Queue Count: ");
+        Serial.println(queueCount);
+
+        Serial.println("-------------------------------");
+    }
+
+    telemetryLastADCFrozen = adcfrozen;
+}
+
+
+if (relaymismatchfault != telemetryLastRelayMismatch)
+{
+    TelemetryEvent event;
+
+    event.timestamp = millis();
+    event.type = EVENT_RELAY_MISMATCH;
+
+    event.packVoltage = packVoltage;
+    event.averageVoltage = averageVoltage;
+    event.imbalance = imbalance;
+
+    event.cell = 0;
+    event.state = currentState;
+    event.runtimeMode = currentRuntimemode;
+    event.active = relaymismatchfault;
+
+    if (enqueueEvent(event))
+    {
+        Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+        Serial.print("Event: RELAY ");
+        Serial.println(event.active ? "MISMATCH" : "RECOVERED");
+
+        Serial.print("Queue Count: ");
+        Serial.println(queueCount);
+
+        Serial.println("-------------------------------");
+    }
+
+    telemetryLastRelayMismatch = relaymismatchfault;
+}
+
+
+if (watchdogfault != telemetryLastWatchdogFault)
+{
+    TelemetryEvent event;
+
+    event.timestamp = millis();
+    event.type = EVENT_WATCHDOG;
+
+    event.packVoltage = packVoltage;
+    event.averageVoltage = averageVoltage;
+    event.imbalance = imbalance;
+
+    event.cell = 0;
+    event.state = currentState;
+    event.runtimeMode = currentRuntimemode;
+    event.active = watchdogfault;
+
+    if (enqueueEvent(event))
+    {
+        Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+        Serial.print("Event: WATCHDOG ");
+        Serial.println(event.active ? "FAULT" : "RECOVERED");
+
+        Serial.print("Queue Count: ");
+        Serial.println(queueCount);
+
+        Serial.println("-------------------------------");
+    }
+
+    telemetryLastWatchdogFault = watchdogfault;
+}
+
+
+if (voltageSpikeFault != telemetryLastVoltageSpike)
+{
+    TelemetryEvent event;
+
+    event.timestamp = millis();
+    event.type = EVENT_VOLTAGE_SPIKE;
+
+    event.packVoltage = packVoltage;
+    event.averageVoltage = averageVoltage;
+    event.imbalance = imbalance;
+
+    event.cell = 0;
+    event.state = currentState;
+    event.runtimeMode = currentRuntimemode;
+    event.active = voltageSpikeFault;
+
+    if (enqueueEvent(event))
+    {
+        Serial.println("---- TELEMETRY EVENT QUEUED ----");
+
+        Serial.print("Event: VOLTAGE SPIKE ");
+        Serial.println(event.active ? "DETECTED" : "CLEARED");
+
+        Serial.print("Queue Count: ");
+        Serial.println(queueCount);
+
+        Serial.println("-------------------------------");
+    }
+
+    telemetryLastVoltageSpike = voltageSpikeFault;
+}
+
+}
+   
+void telemetrySendTask()
+{
+    if (!WiFiconnected || !Blynk.connected())
+        return;
+
+    if (millis() - telemetrySendTimer < telemetrySendInterval)
+        return;
+
+    telemetrySendTimer = millis();
+
+    TelemetryEvent event;
+
+    if (!dequeueEvent(event))
+        return;
+
+    Blynk.virtualWrite(V0, event.type);
+    Blynk.virtualWrite(V1, event.packVoltage);
+    Blynk.virtualWrite(V2, event.averageVoltage);
+    Blynk.virtualWrite(V3, event.imbalance);
+    Blynk.virtualWrite(V4, event.cell);
+    Blynk.virtualWrite(V5, event.state);
+    Blynk.virtualWrite(V6, event.runtimeMode);
+    Blynk.virtualWrite(V7, event.active ? 1 : 0);
+
+    Serial.println("---- TELEMETRY SENT TO BLYNK ----");
+
+    Serial.print("Event Type: ");
+    Serial.println(event.type);
+
+    Serial.print("Queue Remaining: ");
+    Serial.println(queueCount);
+}
+
+
+void rssiTask()
+{
+    if (WiFi.status() != WL_CONNECTED)
+        return;
+
+    if (millis() - rssiTimer >= rssiInterval)
+    {
+        rssiTimer = millis();
+
+        int rssi = WiFi.RSSI();
+
+        Serial.print("WiFi RSSI: ");
+        Serial.print(rssi);
+        Serial.println(" dBm");
+
+        if (Blynk.connected())
+        {
+            Blynk.virtualWrite(V8, rssi);
+        }
+    }
+    }
+
+void dashboardTask()
+{
+    if (!Blynk.connected())
+        return;
+
+    if (millis() - dashboardTimer >= dashboardInterval)
+    {
+        dashboardTimer = millis();
+
+        Serial.print("Dashboard: ");
+        Serial.print(v1, 2);
+        Serial.print(" | ");
+        Serial.print(v2, 2);
+        Serial.print(" | ");
+        Serial.print(v3, 2);
+        Serial.print(" | ");
+        Serial.println(v4, 2);
+
+        Blynk.virtualWrite(V9, v1);
+        Blynk.virtualWrite(V10, v2);
+        Blynk.virtualWrite(V11, v3);
+        Blynk.virtualWrite(V12, v4);
+    }
+}
