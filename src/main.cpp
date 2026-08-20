@@ -401,6 +401,7 @@ void loop() {
 //Battery monitoring task
 void batterytask()
 { 
+     batteryheartbeat = millis();
    if (millis() - batteryTimer >= batteryInterval)
     {
         batteryTimer = millis(); 
@@ -500,7 +501,7 @@ if(cell4valid && v4<minVoltage){
     averageVoltage=0;  
    
     //Imbalance
-   if(activecells>2)
+   if(activecells>=2)
     imbalance=((maxVoltage-minVoltage)/averageVoltage)*100;
    else
    imbalance=0;
@@ -586,6 +587,16 @@ if(cell4valid)
 
 
 // voltage spike fault
+bool oldVoltagesPrimed = false;
+
+// inside batterytask(), before spike check:
+if (!oldVoltagesPrimed) {
+    oldV1 = v1;
+    oldV2 = v2;
+    oldV3 = v3;
+    oldV4 = v4;
+    oldVoltagesPrimed = true;
+}
 bool spikedetected = false;
 if (cell1valid){
    if (abs(v1-oldV1)>0.5)
@@ -653,7 +664,7 @@ else {
     rs = 1 ;
   }
 }
- batteryheartbeat = millis();
+
 }
 }
  
@@ -1288,6 +1299,7 @@ if(currentRuntimemode != lastRuntimeMode)
 
 // Buzzer Task starts for Task 2 
 void buzzertask() {
+    buzzerheartbeat = millis();
   if (!buzzercontrolenable)
     return ;
   
@@ -1326,7 +1338,7 @@ case failure:
     digitalWrite(Buzzer, 1);
     break;
 }
-buzzerheartbeat = millis();
+
 
 }
   }
@@ -1334,6 +1346,7 @@ buzzerheartbeat = millis();
 
 //LED Task code from here
 void ledtask() {
+    ledheartbeat = millis();
   if (!ledcontrolenable)
     return;
 
@@ -1374,14 +1387,17 @@ case failure:
     digitalWrite(RED_LED, 1);
     break;
 }
-ledheartbeat = millis();
+
 
 }
   }
 
 //Relay Task code from here For Task 2 Only for Faults and relay chatter 
 void relaytask()
+
 {
+ relayheartbeat = millis(); 
+
   if (!relaycontrolenable)
     return ;
     if(millis() - relayTimer >= relayInterval)
@@ -1421,12 +1437,13 @@ if(desiredRelayState != relaystate)
    {
         relaydelayrun = false;
     }
-    relayheartbeat = millis();  
+    
     }
 } 
 
 // Serial Task code from here for Task 1 and Task 2
 void serialtask(){
+     serialheartbeat = millis();
  if (!serialcontrolenable)
    return ;
   if (millis() - serialTimer >= serialInterval) {
@@ -1595,24 +1612,9 @@ if (sensor3disFault)
       Serial.println("Shutdown");
       break;
   }
-  if(adcfrozen)
-    lcd.print("ADC Frozen");
-
-else if(relaymismatchfault)
-    lcd.print("Relay Fault");
-
-else if(batterySensorFault)
-    lcd.print("Battery Sensor Fault");
-
-else if(invalidreadingcell1 || invalidreadingcell2 ||
-        invalidreadingcell3 || invalidreadingcell4)
-    lcd.print("Invalid Read");
-
-else if(watchdogfault)
-    lcd.print("Watchdog");
   
 
-  serialheartbeat = millis();
+ 
 }}
  
 
@@ -1672,6 +1674,7 @@ void Screentask() {
 
 // LCD Task code from here for Task 2
 void lcdtask() {
+    lcdheartbeat = millis();
    if(!lcdcontrolenable)
     return ;
 
@@ -1803,7 +1806,7 @@ void lcdtask() {
    break;
 
    }
-   lcdheartbeat = millis();
+   
   }
   }
 
@@ -2219,6 +2222,74 @@ if (voltageSpikeFault != telemetryLastVoltageSpike)
 }
 
 }
+
+const char* getEventName(TelemetryEventType type)
+{
+    switch(type)
+    {
+        case EVENT_STATE_CHANGE:
+            return "STATE CHANGE";
+
+        case EVENT_RUNTIME_CHANGE:
+            return "RUNTIME MODE CHANGE";
+
+        case EVENT_SENSOR_FAULT:
+            return "SENSOR FAULT";
+
+        case EVENT_INVALID_READING:
+            return "INVALID READING";
+
+        case EVENT_ADC_FROZEN:
+            return "ADC FROZEN";
+
+        case EVENT_RELAY_MISMATCH:
+            return "RELAY MISMATCH";
+
+        case EVENT_VOLTAGE_SPIKE:
+            return "VOLTAGE SPIKE";
+
+        case EVENT_WATCHDOG:
+            return "WATCHDOG FAULT";
+
+        default:
+            return "UNKNOWN EVENT";
+    }
+}
+
+const char* getRecommendation()
+{
+    if (currentRuntimemode == Shutdown)
+        return "SYSTEM SHUTDOWN - INSPECT IMMEDIATELY";
+
+    if (currentRuntimemode == Failsafe)
+        return "FAILSAFE ACTIVE - CHECK SYSTEM";
+
+    if (watchdogfault)
+        return "WATCHDOG FAULT - CHECK RELAY";
+
+    if (adcfrozen)
+        return "ADC FROZEN - CHECK SENSOR";
+
+    if (relaymismatchfault)
+        return "RELAY MISMATCH - INSPECT RELAY";
+
+    if (sensor1disFault || sensor2disFault ||
+        sensor3disFault || sensor4disFault)
+        return "SENSOR FAULT - CHECK CELL SENSOR";
+
+    if (imbalance >= 25.0)
+        return "HIGH IMBALANCE - CHECK CELLS";
+
+    if (currentState == critical)
+        return "CRITICAL BATTERY CONDITION";
+
+    if (currentState == warning)
+        return "MONITOR BATTERY CONDITION";
+
+    return "SYSTEM OPERATING NORMALLY";
+}
+
+
    
 void telemetrySendTask()
 {
@@ -2234,6 +2305,41 @@ void telemetrySendTask()
 
     if (!dequeueEvent(event))
         return;
+
+
+    if (Blynk.connected())
+
+    if (event.type != EVENT_STATE_CHANGE && event.type != EVENT_RUNTIME_CHANGE)
+{
+    const char* eventName = getEventName(event.type);
+
+    char faultMessage[50];
+
+    if (event.cell > 0)
+    {
+        snprintf(
+            faultMessage,
+            sizeof(faultMessage),
+            "%s - C%d",
+            eventName,
+            event.cell
+        );
+    }
+    else
+    {
+        snprintf(
+            faultMessage,
+            sizeof(faultMessage),
+            "%s",
+            eventName
+        );
+    }
+
+    Blynk.virtualWrite(V14, faultMessage);
+
+    Serial.print("Fault History: ");
+    Serial.println(faultMessage);
+}
 
     Blynk.virtualWrite(V0, event.type);
     Blynk.virtualWrite(V1, event.packVoltage);
@@ -2276,6 +2382,37 @@ void rssiTask()
     }
     }
 
+    int calculateRiskLevel()
+{
+    if (currentRuntimemode == Shutdown ||
+        currentRuntimemode == Failsafe ||
+        currentState == failure)
+    {
+        return 3;   // CRITICAL
+    }
+
+    if (currentState == critical ||
+        imbalance >= 25.0 ||
+        watchdogfault ||
+        adcfrozen ||
+        relaymismatchfault)
+    {
+        return 2;   // HIGH
+    }
+
+    if (currentState == warning ||
+        imbalance >= 10.0 ||
+        sensor1disFault ||
+        sensor2disFault ||
+        sensor3disFault ||
+        sensor4disFault)
+    {
+        return 1;   // MEDIUM
+    }
+
+    return 0;       // LOW
+}
+
 void dashboardTask()
 {
     if (!Blynk.connected())
@@ -2294,9 +2431,21 @@ void dashboardTask()
         Serial.print(" | ");
         Serial.println(v4, 2);
 
+
         Blynk.virtualWrite(V9, v1);
         Blynk.virtualWrite(V10, v2);
         Blynk.virtualWrite(V11, v3);
         Blynk.virtualWrite(V12, v4);
+
+        Blynk.virtualWrite(V5, currentState);
+        Blynk.virtualWrite(V6, currentRuntimemode);
+
+        Blynk.virtualWrite(V13,1);
+       
+        int riskLevel = calculateRiskLevel();
+        Blynk.virtualWrite(V15, riskLevel); 
+
+        Blynk.virtualWrite(V16, getRecommendation());
     }
 }
+
